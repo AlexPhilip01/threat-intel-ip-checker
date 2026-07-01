@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: threat-intel-dashboard
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 60
+    healthCheckPath: /healthz
+    envVars:
+      - key: ENABLE_SCHEDULER
+        value: "true"
+      - key: CHECK_INTERVAL_HOURS
+        value: "2"
+      - key: PYTHON_VERSION
+        value: "3.11.9"

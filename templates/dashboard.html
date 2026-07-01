@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Threat Watch — Live IP Monitoring</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="scanline" aria-hidden="true"></div>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <h1 class="brand"><span class="brand-mark">▚</span>THREAT WATCH</h1>
+    <div class="conn-status">
+      <span class="conn-dot" id="connDot"></span>
+      <span id="connLabel">CONNECTING&hellip;</span>
+    </div>
+  </div>
+</header>
+
+<main class="main">
+  <section class="summary-strip" id="summaryStrip" aria-label="Watchlist summary">
+    <div class="summary-item">
+      <span class="summary-value" id="sumTotal">0</span>
+      <span class="summary-label">WATCHED</span>
+    </div>
+    <div class="summary-item risk-high">
+      <span class="summary-value" id="sumHigh">0</span>
+      <span class="summary-label">HIGH</span>
+    </div>
+    <div class="summary-item risk-medium">
+      <span class="summary-value" id="sumMedium">0</span>
+      <span class="summary-label">MEDIUM</span>
+    </div>
+    <div class="summary-item risk-low">
+      <span class="summary-value" id="sumLow">0</span>
+      <span class="summary-label">LOW</span>
+    </div>
+    <div class="summary-item risk-unknown">
+      <span class="summary-value" id="sumUnknown">0</span>
+      <span class="summary-label">UNKNOWN</span>
+    </div>
+    <button class="btn-refresh" id="refreshAllBtn" type="button">REFRESH ALL NOW</button>
+  </section>
+
+  <section class="panel">
+    <form id="addForm" class="add-form">
+      <label for="ipInput" class="sr-only">IP address to add</label>
+      <input
+        type="text"
+        id="ipInput"
+        class="ip-input"
+        placeholder="ADD IP ADDRESS TO WATCHLIST — e.g. 8.8.8.8"
+        autocomplete="off"
+        spellcheck="false"
+      >
+      <button type="submit" class="btn-add">ADD TO WATCHLIST</button>
+    </form>
+    <p class="add-error" id="addError" role="alert"></p>
+  </section>
+
+  <section class="panel table-panel">
+    <table class="watch-table">
+      <thead>
+        <tr>
+          <th scope="col">IP ADDRESS</th>
+          <th scope="col">RISK</th>
+          <th scope="col">SOURCES</th>
+          <th scope="col">ADDED</th>
+          <th scope="col">LAST CHECKED</th>
+          <th scope="col"><span class="sr-only">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody id="watchTableBody">
+        <tr class="empty-row">
+          <td colspan="6">No IPs on the watchlist yet — add one above.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+const POLL_MS = 15000;
+
+function riskClass(risk) {
+  return 'risk-' + (risk || 'unknown').toLowerCase();
+}
+
+function formatTime(iso) {
+  if (!iso) return '\u2014';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '\u2014';
+  return d.toLocaleString();
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function renderRow(entry) {
+  const result = entry.result;
+  const risk = result ? result.overall_risk : 'PENDING';
+  const riskCls = result ? riskClass(risk) : 'risk-pending';
+  const ip = escapeHtml(entry.ip);
+
+  let sourcesHtml = '<span class="source-chip risk-pending">checking&hellip;</span>';
+  if (result && result.sources && result.sources.length) {
+    sourcesHtml = result.sources
+      .map(s => `<span class="source-chip ${riskClass(s.risk)}">${escapeHtml(s.source)}:${escapeHtml(s.risk)}</span>`)
+      .join(' ');
+  } else if (result && (!result.sources || result.sources.length === 0)) {
+    sourcesHtml = '<span class="source-chip risk-unknown">no sources configured</span>';
+  }
+
+  const lastChecked = result ? formatTime(result.checked_at) : '\u2014';
+
+  return `
+    <tr>
+      <td class="ip-cell">${ip}</td>
+      <td><span class="badge ${riskCls}">${escapeHtml(risk)}</span></td>
+      <td class="sources-cell">${sourcesHtml}</td>
+      <td>${formatTime(entry.added_at)}</td>
+      <td>${lastChecked}</td>
+      <td><button class="btn-remove" data-ip="${ip}" type="button">REMOVE</button></td>
+    </tr>
+  `;
+}
+
+function renderSummary(watchlist) {
+  const counts = { HIGH: 0, MEDIUM: 0, LOW: 0, UNKNOWN: 0 };
+  watchlist.forEach(entry => {
+    const risk = entry.result ? entry.result.overall_risk : 'UNKNOWN';
+    if (counts[risk] !== undefined) counts[risk]++;
+  });
+  document.getElementById('sumTotal').textContent = watchlist.length;
+  document.getElementById('sumHigh').textContent = counts.HIGH;
+  document.getElementById('sumMedium').textContent = counts.MEDIUM;
+  document.getElementById('sumLow').textContent = counts.LOW;
+  document.getElementById('sumUnknown').textContent = counts.UNKNOWN;
+}
+
+function setConn(ok) {
+  const dot = document.getElementById('connDot');
+  const label = document.getElementById('connLabel');
+  dot.classList.toggle('conn-ok', ok);
+  dot.classList.toggle('conn-bad', !ok);
+  label.textContent = ok ? 'LIVE' : 'DISCONNECTED';
+}
+
+async function refreshWatchlist() {
+  try {
+    const res = await fetch('/api/watchlist');
+    if (!res.ok) throw new Error('bad response');
+    const data = await res.json();
+    const tbody = document.getElementById('watchTableBody');
+
+    if (data.watchlist.length === 0) {
+      tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No IPs on the watchlist yet — add one above.</td></tr>';
+    } else {
+      tbody.innerHTML = data.watchlist.map(renderRow).join('');
+      tbody.querySelectorAll('.btn-remove').forEach(btn => {
+        btn.addEventListener('click', () => removeIp(btn.dataset.ip));
+      });
+    }
+    renderSummary(data.watchlist);
+    setConn(true);
+  } catch (err) {
+    setConn(false);
+  }
+}
+
+async function addIp(ip) {
+  const errorEl = document.getElementById('addError');
+  errorEl.textContent = '';
+  try {
+    const res = await fetch('/api/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      errorEl.textContent = data.error || 'Could not add IP.';
+      return;
+    }
+    document.getElementById('ipInput').value = '';
+    refreshWatchlist();
+  } catch (err) {
+    errorEl.textContent = 'Network error — is the server running?';
+  }
+}
+
+async function removeIp(ip) {
+  await fetch('/api/watchlist/' + encodeURIComponent(ip), { method: 'DELETE' });
+  refreshWatchlist();
+}
+
+document.getElementById('addForm').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const ip = document.getElementById('ipInput').value.trim();
+  if (ip) addIp(ip);
+});
+
+document.getElementById('refreshAllBtn').addEventListener('click', async () => {
+  await fetch('/api/watchlist/refresh', { method: 'POST' });
+  setTimeout(refreshWatchlist, 1000);
+});
+
+refreshWatchlist();
+setInterval(refreshWatchlist, POLL_MS);
+</script>
+</body>
+</html>
